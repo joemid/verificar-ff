@@ -34,7 +34,6 @@ async function initialize() {
             '--disable-gpu',
             '--no-first-run',
             '--no-zygote',
-            '--single-process',
             '--disable-extensions'
         ]
     });
