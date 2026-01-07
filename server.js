@@ -1,4 +1,4 @@
-// server.js - VERIFICADOR FF - v6 FINAL
+// server.js - VERIFICADOR FF - RAILWAY VERSION
 const puppeteer = require('puppeteer');
 const express = require('express');
 const cors = require('cors');
@@ -9,9 +9,8 @@ app.use(express.json());
 
 const CONFIG = {
     PIN: '113F2689-95D4-4A49-B3C7-3D590893C76E',
-    PORT: 3000,
-    HEADLESS: false,
-    MAX_PAGES: 3,
+    PORT: process.env.PORT || 3000,
+    MAX_PAGES: 2,
     TIMEOUT: 30000
 };
 
@@ -26,8 +25,17 @@ async function initialize() {
     console.log('🚀 Iniciando navegador...');
     
     browser = await puppeteer.launch({
-        headless: CONFIG.HEADLESS ? 'new' : false,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1000,800']
+        headless: 'new',
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process',
+            '--disable-extensions'
+        ]
     });
     
     console.log('✅ Navegador iniciado\n');
@@ -72,12 +80,10 @@ async function prepararPagina(index) {
             await sleep(3000);
         }
         
-        // Llenar formulario UNA VEZ y dejarlo así
         console.log(`   [${index + 1}] Llenando formulario...`);
         await llenarFormulario(page);
         await sleep(500);
         
-        // Verificar que se llenó correctamente
         const check = await page.evaluate(() => {
             return {
                 name: document.querySelector('#Name')?.value || '',
@@ -98,17 +104,14 @@ async function prepararPagina(index) {
 }
 
 async function llenarFormulario(page) {
-    // Usar page.type para simular escritura real
-    await page.click('#Name', { clickCount: 3 }); // Seleccionar todo
+    await page.click('#Name', { clickCount: 3 });
     await page.type('#Name', 'Jose Hernandez');
     
     await page.click('#BornAt', { clickCount: 3 });
     await page.type('#BornAt', '19/06/2000');
     
-    // Seleccionar país Venezuela
     await page.select('#NationalityAlphaCode', 'VE');
     
-    // Marcar checkbox
     const isChecked = await page.evaluate(() => document.querySelector('#privacy')?.checked);
     if (!isChecked) {
         await page.click('#privacy');
@@ -139,17 +142,14 @@ async function verificarID(playerId, { page, index }) {
         const start = Date.now();
         console.log(`\n⚡ [${index + 1}] Verificando: ${playerId}`);
         
-        // SOLO poner el ID - NO tocar el resto del formulario
         await page.click('#GameAccountId', { clickCount: 3 });
         await page.type('#GameAccountId', playerId);
         
         await sleep(300);
         
-        // Click en VERIFICAR ID (botón #btn-verify)
         console.log(`   [${index + 1}] Click en Verificar ID...`);
         await page.click('#btn-verify');
         
-        // Esperar nickname en #btn-player-game-data
         let nickname = null;
         console.log(`   [${index + 1}] Esperando nickname...`);
         
@@ -158,7 +158,7 @@ async function verificarID(playerId, { page, index }) {
             
             nickname = await page.evaluate(() => {
                 const el = document.querySelector('#btn-player-game-data');
-                if (el && el.offsetParent !== null) { // Visible
+                if (el && el.offsetParent !== null) {
                     const t = el.textContent.trim();
                     if (t.length >= 3 && t.length <= 30) return t;
                 }
@@ -170,15 +170,12 @@ async function verificarID(playerId, { page, index }) {
         
         const elapsed = Date.now() - start;
         
-        // Limpiar SOLO el ID para siguiente verificación
         await page.click('#GameAccountId', { clickCount: 3 });
         await page.keyboard.press('Backspace');
         
-        // Ocultar el área del nickname (volver al estado inicial)
         await page.evaluate(() => {
             const btn = document.querySelector('#btn-player-game-data');
             if (btn) btn.textContent = '';
-            // Ocultar el div que contiene el nickname
             const div = document.querySelector('.redeem-data');
             if (div) div.style.display = 'none';
         });
@@ -231,13 +228,14 @@ app.get('/', (req, res) => res.json({
 }));
 
 async function start() {
-    console.log('\n🔥 VERIFICADOR FF - v6 FINAL\n');
+    console.log('\n🔥 VERIFICADOR FF - RAILWAY\n');
     await initialize();
-    app.listen(CONFIG.PORT, () => {
-        console.log(`⚡ http://localhost:${CONFIG.PORT}`);
-        console.log(`📌 http://localhost:${CONFIG.PORT}/test/6068831320\n`);
+    app.listen(CONFIG.PORT, '0.0.0.0', () => {
+        console.log(`⚡ Servidor en puerto ${CONFIG.PORT}`);
     });
 }
 
 process.on('SIGINT', async () => { if (browser) await browser.close(); process.exit(); });
+process.on('SIGTERM', async () => { if (browser) await browser.close(); process.exit(); });
+
 start();
