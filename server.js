@@ -1,4 +1,4 @@
-// server.js - VERIFICADOR FF - RAILWAY VERSION
+// server.js - VERIFICADOR FF - RAILWAY CON CACHÉ
 const puppeteer = require('puppeteer-core');
 const express = require('express');
 const cors = require('cors');
@@ -14,6 +14,10 @@ const CONFIG = {
     TIMEOUT: 30000
 };
 
+// Edge Function para caché seguro
+const EDGE_URL = 'https://jodltxvsernvdevqkswp.supabase.co/functions/v1/verificar-pago';
+const EDGE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpvZGx0eHZzZXJudmRldnFrc3dwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYzNDA5MjAsImV4cCI6MjA4MTkxNjkyMH0.hG0VSDrdU2QAHVoUdJoDuCmCMyLb0lU5Oepfi7MJ_bA';
+
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 let browser = null;
@@ -21,6 +25,40 @@ let pagePool = [];
 let busyPages = new Set();
 let requestQueue = [];
 
+// ========== FUNCIONES DE CACHÉ ==========
+async function buscarEnCache(id_juego) {
+    try {
+        const res = await fetch(EDGE_URL, {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + EDGE_KEY
+            },
+            body: JSON.stringify({ accion: 'cache_buscar', id_juego })
+        });
+        return await res.json();
+    } catch (e) {
+        console.error('Error caché:', e.message);
+        return { encontrado: false };
+    }
+}
+
+async function guardarEnCache(id_juego, nickname, valido) {
+    try {
+        await fetch(EDGE_URL, {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + EDGE_KEY
+            },
+            body: JSON.stringify({ accion: 'cache_guardar', id_juego, nickname, valido })
+        });
+    } catch (e) {
+        console.error('Error guardar caché:', e.message);
+    }
+}
+
+// ========== PUPPETEER ==========
 async function initialize() {
     console.log('🚀 Iniciando navegador...');
     
@@ -84,16 +122,6 @@ async function prepararPagina(index) {
         await llenarFormulario(page);
         await sleep(500);
         
-        const check = await page.evaluate(() => {
-            return {
-                name: document.querySelector('#Name')?.value || '',
-                born: document.querySelector('#BornAt')?.value || '',
-                country: document.querySelector('#NationalityAlphaCode')?.value || '',
-                privacy: document.querySelector('#privacy')?.checked || false
-            };
-        });
-        console.log(`   [${index + 1}] Form:`, JSON.stringify(check));
-        
         pagePool[index] = { page, ready: true };
         console.log(`   [${index + 1}] ✅ Lista`);
         
@@ -133,25 +161,23 @@ function releasePage(index) {
     if (requestQueue.length > 0) {
         const { resolve, playerId } = requestQueue.shift();
         const avail = getAvailablePage();
-        if (avail) verificarID(playerId, avail).then(resolve);
+        if (avail) verificarConPuppeteer(playerId, avail).then(resolve);
     }
 }
 
-async function verificarID(playerId, { page, index }) {
+async function verificarConPuppeteer(playerId, { page, index }) {
     try {
         const start = Date.now();
-        console.log(`\n⚡ [${index + 1}] Verificando: ${playerId}`);
+        console.log(`\n⚡ [${index + 1}] Puppeteer: ${playerId}`);
         
         await page.click('#GameAccountId', { clickCount: 3 });
         await page.type('#GameAccountId', playerId);
         
         await sleep(300);
         
-        console.log(`   [${index + 1}] Click en Verificar ID...`);
         await page.click('#btn-verify');
         
         let nickname = null;
-        console.log(`   [${index + 1}] Esperando nickname...`);
         
         for (let i = 0; i < 30; i++) {
             await sleep(200);
@@ -182,12 +208,15 @@ async function verificarID(playerId, { page, index }) {
         
         releasePage(index);
         
+        // Guardar en caché (async, no espera)
+        guardarEnCache(playerId, nickname, !!nickname);
+        
         if (nickname) {
-            console.log(`   ✅ ${nickname} (${elapsed}ms)`);
-            return { success: true, player_id: playerId, nickname, time_ms: elapsed };
+            console.log(`   ✅ ${nickname} (${elapsed}ms) [GUARDADO EN CACHÉ]`);
+            return { success: true, player_id: playerId, nickname, time_ms: elapsed, source: 'puppeteer' };
         } else {
-            console.log(`   ❌ No encontrado (${elapsed}ms)`);
-            return { success: false, player_id: playerId, error: 'No encontrado' };
+            console.log(`   ❌ No encontrado (${elapsed}ms) [GUARDADO EN CACHÉ]`);
+            return { success: false, player_id: playerId, error: 'No encontrado', source: 'puppeteer' };
         }
         
     } catch (error) {
@@ -197,41 +226,74 @@ async function verificarID(playerId, { page, index }) {
     }
 }
 
-app.get('/test/:id', async (req, res) => {
-    const id = req.params.id;
-    if (!/^\d{8,12}$/.test(id)) return res.json({ success: false, error: 'ID inválido' });
+// ========== VERIFICACIÓN CON CACHÉ ==========
+async function verificarID(playerId) {
+    const start = Date.now();
+    
+    // 1. Buscar en caché primero
+    console.log(`\n🔍 Buscando ${playerId} en caché...`);
+    const cache = await buscarEnCache(playerId);
+    
+    if (cache.encontrado) {
+        const elapsed = Date.now() - start;
+        console.log(`   💾 CACHÉ HIT: ${cache.nickname || 'inválido'} (${elapsed}ms)`);
+        
+        if (cache.valido) {
+            return { 
+                success: true, 
+                player_id: playerId, 
+                nickname: cache.nickname, 
+                time_ms: elapsed,
+                source: 'cache'
+            };
+        } else {
+            return { 
+                success: false, 
+                player_id: playerId, 
+                error: 'No encontrado', 
+                source: 'cache'
+            };
+        }
+    }
+    
+    // 2. No está en caché, usar Puppeteer
+    console.log(`   📭 CACHÉ MISS - usando Puppeteer`);
     
     const avail = getAvailablePage();
     if (avail) {
-        res.json(await verificarID(id, avail));
+        return await verificarConPuppeteer(playerId, avail);
     } else {
-        res.json(await new Promise(r => requestQueue.push({ resolve: r, playerId: id })));
+        return await new Promise(r => requestQueue.push({ resolve: r, playerId }));
     }
+}
+
+// ========== ENDPOINTS ==========
+app.get('/test/:id', async (req, res) => {
+    const id = req.params.id;
+    if (!/^\d{8,12}$/.test(id)) return res.json({ success: false, error: 'ID inválido' });
+    res.json(await verificarID(id));
 });
 
 app.post('/verify', async (req, res) => {
     const id = req.body.player_id;
     if (!id || !/^\d{8,12}$/.test(id)) return res.json({ success: false, error: 'ID inválido' });
-    
-    const avail = getAvailablePage();
-    if (avail) {
-        res.json(await verificarID(id, avail));
-    } else {
-        res.json(await new Promise(r => requestQueue.push({ resolve: r, playerId: id })));
-    }
+    res.json(await verificarID(id));
 });
 
 app.get('/', (req, res) => res.json({ 
     status: 'ok', 
     ready: pagePool.filter(p => p?.ready).length,
-    busy: busyPages.size 
+    busy: busyPages.size,
+    cache: 'enabled (90 days)'
 }));
 
+// ========== INICIO ==========
 async function start() {
-    console.log('\n🔥 VERIFICADOR FF - RAILWAY\n');
+    console.log('\n🔥 VERIFICADOR FF - RAILWAY CON CACHÉ\n');
     await initialize();
     app.listen(CONFIG.PORT, '0.0.0.0', () => {
         console.log(`⚡ Servidor en puerto ${CONFIG.PORT}`);
+        console.log(`💾 Caché: 90 días via Edge Function\n`);
     });
 }
 
