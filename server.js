@@ -1,5 +1,5 @@
 // server.js - VERIFICADOR FF - RAILWAY VERSION
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
 const express = require('express');
 const cors = require('cors');
 
@@ -26,6 +26,7 @@ async function initialize() {
     
     browser = await puppeteer.launch({
         headless: 'new',
+        executablePath: '/usr/bin/google-chrome-stable',
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
