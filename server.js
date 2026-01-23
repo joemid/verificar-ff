@@ -1,4 +1,4 @@
-// server.js - VERIFICADOR FF - RAILWAY CON CACHÉ
+// server.js - VERIFICADOR FF - RAILWAY (SIN CACHÉ - LO MANEJA API.PHP)
 const puppeteer = require('puppeteer-core');
 const express = require('express');
 const cors = require('cors');
@@ -14,49 +14,12 @@ const CONFIG = {
     TIMEOUT: 30000
 };
 
-// Edge Function para caché seguro
-const EDGE_URL = 'https://jodltxvsernvdevqkswp.supabase.co/functions/v1/verificar-pago';
-const EDGE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpvZGx0eHZzZXJudmRldnFrc3dwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYzNDA5MjAsImV4cCI6MjA4MTkxNjkyMH0.hG0VSDrdU2QAHVoUdJoDuCmCMyLb0lU5Oepfi7MJ_bA';
-
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 let browser = null;
 let pagePool = [];
 let busyPages = new Set();
 let requestQueue = [];
-
-// ========== FUNCIONES DE CACHÉ ==========
-async function buscarEnCache(id_juego) {
-    try {
-        const res = await fetch(EDGE_URL, {
-            method: 'POST',
-            headers: { 
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer ' + EDGE_KEY
-            },
-            body: JSON.stringify({ accion: 'cache_buscar', id_juego })
-        });
-        return await res.json();
-    } catch (e) {
-        console.error('Error caché:', e.message);
-        return { encontrado: false };
-    }
-}
-
-async function guardarEnCache(id_juego, nickname, valido) {
-    try {
-        await fetch(EDGE_URL, {
-            method: 'POST',
-            headers: { 
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer ' + EDGE_KEY
-            },
-            body: JSON.stringify({ accion: 'cache_guardar', id_juego, nickname, valido })
-        });
-    } catch (e) {
-        console.error('Error guardar caché:', e.message);
-    }
-}
 
 // ========== PUPPETEER ==========
 async function initialize() {
@@ -168,7 +131,7 @@ function releasePage(index) {
 async function verificarConPuppeteer(playerId, { page, index }) {
     try {
         const start = Date.now();
-        console.log(`\n⚡ [${index + 1}] Puppeteer: ${playerId}`);
+        console.log(`\n⚡ [${index + 1}] Verificando: ${playerId}`);
         
         await page.click('#GameAccountId', { clickCount: 3 });
         await page.type('#GameAccountId', playerId);
@@ -196,6 +159,7 @@ async function verificarConPuppeteer(playerId, { page, index }) {
         
         const elapsed = Date.now() - start;
         
+        // Limpiar para siguiente consulta
         await page.click('#GameAccountId', { clickCount: 3 });
         await page.keyboard.press('Backspace');
         
@@ -208,15 +172,12 @@ async function verificarConPuppeteer(playerId, { page, index }) {
         
         releasePage(index);
         
-        // Guardar en caché (async, no espera)
-        guardarEnCache(playerId, nickname, !!nickname);
-        
         if (nickname) {
-            console.log(`   ✅ ${nickname} (${elapsed}ms) [GUARDADO EN CACHÉ]`);
-            return { success: true, player_id: playerId, nickname, time_ms: elapsed, source: 'puppeteer' };
+            console.log(`   ✅ ${nickname} (${elapsed}ms)`);
+            return { success: true, player_id: playerId, nickname, time_ms: elapsed };
         } else {
-            console.log(`   ❌ No encontrado (${elapsed}ms) [GUARDADO EN CACHÉ]`);
-            return { success: false, player_id: playerId, error: 'No encontrado', source: 'puppeteer' };
+            console.log(`   ❌ No encontrado (${elapsed}ms)`);
+            return { success: false, player_id: playerId, error: 'No encontrado' };
         }
         
     } catch (error) {
@@ -226,43 +187,13 @@ async function verificarConPuppeteer(playerId, { page, index }) {
     }
 }
 
-// ========== VERIFICACIÓN CON CACHÉ ==========
+// ========== VERIFICACIÓN DIRECTA ==========
 async function verificarID(playerId) {
-    const start = Date.now();
-    
-    // 1. Buscar en caché primero
-    console.log(`\n🔍 Buscando ${playerId} en caché...`);
-    const cache = await buscarEnCache(playerId);
-    
-    if (cache.encontrado) {
-        const elapsed = Date.now() - start;
-        console.log(`   💾 CACHÉ HIT: ${cache.nickname || 'inválido'} (${elapsed}ms)`);
-        
-        if (cache.valido) {
-            return { 
-                success: true, 
-                player_id: playerId, 
-                nickname: cache.nickname, 
-                time_ms: elapsed,
-                source: 'cache'
-            };
-        } else {
-            return { 
-                success: false, 
-                player_id: playerId, 
-                error: 'No encontrado', 
-                source: 'cache'
-            };
-        }
-    }
-    
-    // 2. No está en caché, usar Puppeteer
-    console.log(`   📭 CACHÉ MISS - usando Puppeteer`);
-    
     const avail = getAvailablePage();
     if (avail) {
         return await verificarConPuppeteer(playerId, avail);
     } else {
+        // Encolar si no hay páginas disponibles
         return await new Promise(r => requestQueue.push({ resolve: r, playerId }));
     }
 }
@@ -284,16 +215,15 @@ app.get('/', (req, res) => res.json({
     status: 'ok', 
     ready: pagePool.filter(p => p?.ready).length,
     busy: busyPages.size,
-    cache: 'enabled (90 days)'
+    queue: requestQueue.length
 }));
 
 // ========== INICIO ==========
 async function start() {
-    console.log('\n🔥 VERIFICADOR FF - RAILWAY CON CACHÉ\n');
+    console.log('\n🔥 VERIFICADOR FF - RAILWAY\n');
     await initialize();
     app.listen(CONFIG.PORT, '0.0.0.0', () => {
-        console.log(`⚡ Servidor en puerto ${CONFIG.PORT}`);
-        console.log(`💾 Caché: 90 días via Edge Function\n`);
+        console.log(`⚡ Servidor en puerto ${CONFIG.PORT}\n`);
     });
 }
 
