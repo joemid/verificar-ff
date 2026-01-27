@@ -94,7 +94,7 @@ async function prepararPagina(index) {
         await page.click('#btn-validate');
         console.log(`   [${index + 1}] PIN + Click: ${Date.now() - t}ms`);
         
-        // Esperar formulario - reducido de 3000 a 1500
+        // Esperar formulario
         t = Date.now();
         await sleep(1500);
         await page.waitForSelector('#GameAccountId', { timeout: 15000 });
@@ -124,15 +124,29 @@ async function prepararPagina(index) {
         
         console.log(`   [${index + 1}] Formulario llenado: ${Date.now() - t}ms`);
         
-        // Checkbox
+        // Checkbox - FORZAR CON JAVASCRIPT
         t = Date.now();
+        await page.evaluate(() => {
+            const cb = document.querySelector('#privacy');
+            if (cb && !cb.checked) {
+                cb.checked = true;
+                cb.dispatchEvent(new Event('click', { bubbles: true }));
+                cb.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        });
         await sleep(100);
-        const isChecked = await page.evaluate(() => document.querySelector('#privacy')?.checked);
-        if (!isChecked) {
-            await page.click('#privacy');
-        }
+        
+        // Verificar
         const finalCheck = await page.evaluate(() => document.querySelector('#privacy')?.checked);
-        console.log(`   [${index + 1}] Checkbox: ${Date.now() - t}ms (${finalCheck ? '✅' : '❌'})`);
+        
+        // Si aún no está, intentar click directo
+        if (!finalCheck) {
+            await page.click('#privacy');
+            await sleep(100);
+        }
+        
+        const confirmed = await page.evaluate(() => document.querySelector('#privacy')?.checked);
+        console.log(`   [${index + 1}] Checkbox: ${Date.now() - t}ms (${confirmed ? '✅' : '❌'})`);
         
         pagePool[index] = { page, ready: true };
         console.log(`   [${index + 1}] ✅ LISTA - Total: ${Date.now() - start}ms`);
