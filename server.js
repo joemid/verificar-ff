@@ -1,4 +1,4 @@
-// server.js - VERIFICADOR FF - RAILWAY (SIN CACHÉ - LO MANEJA API.PHP)
+// server.js - VERIFICADOR FF - RAILWAY (MEJORADO v2)
 const puppeteer = require('puppeteer-core');
 const express = require('express');
 const cors = require('cors');
@@ -10,24 +10,25 @@ app.use(express.json());
 const CONFIG = {
     PIN: '113F2689-95D4-4A49-B3C7-3D590893C76E',
     PORT: process.env.PORT || 3000,
-    MAX_PAGES: 2,
-    TIMEOUT: 30000
+    TIMEOUT: 60000
 };
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 let browser = null;
-let pagePool = [];
-let busyPages = new Set();
+let page = null;
+let pageReady = false;
+let pageBusy = false;
 let requestQueue = [];
 
-// ========== PUPPETEER ==========
+// ========== INICIALIZAR NAVEGADOR ==========
 async function initialize() {
     console.log('🚀 Iniciando navegador...');
     
     browser = await puppeteer.launch({
         headless: 'new',
         executablePath: '/usr/bin/google-chrome-stable',
+        protocolTimeout: CONFIG.TIMEOUT,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -35,28 +36,48 @@ async function initialize() {
             '--disable-gpu',
             '--no-first-run',
             '--no-zygote',
-            '--disable-extensions'
+            '--single-process',
+            '--disable-extensions',
+            '--disable-background-networking',
+            '--disable-sync',
+            '--disable-translate',
+            '--mute-audio'
         ]
     });
     
     console.log('✅ Navegador iniciado\n');
-    
-    for (let i = 0; i < CONFIG.MAX_PAGES; i++) {
-        await prepararPagina(i);
-    }
-    
-    const ready = pagePool.filter(p => p?.ready).length;
-    console.log(`\n✅ ${ready} páginas listas\n`);
+    await prepararPagina();
 }
 
-async function prepararPagina(index) {
+// ========== PREPARAR PÁGINA ==========
+async function prepararPagina() {
     try {
-        console.log(`   [${index + 1}] Abriendo...`);
+        console.log('📄 Preparando página...');
+        pageReady = false;
         
-        const page = await browser.newPage();
+        // Cerrar página anterior si existe
+        if (page) {
+            try { await page.close(); } catch(e) {}
+        }
+        
+        page = await browser.newPage();
+        page.setDefaultTimeout(CONFIG.TIMEOUT);
+        page.setDefaultNavigationTimeout(CONFIG.TIMEOUT);
+        
         await page.setViewport({ width: 1000, height: 800 });
         
-        console.log(`   [${index + 1}] Cargando redeem.hype.games...`);
+        // Bloquear recursos innecesarios
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+            const type = req.resourceType();
+            if (['image', 'font', 'media', 'stylesheet'].includes(type)) {
+                req.abort();
+            } else {
+                req.continue();
+            }
+        });
+        
+        console.log('   Cargando redeem.hype.games...');
         await page.goto('https://redeem.hype.games', { 
             waitUntil: 'networkidle2', 
             timeout: CONFIG.TIMEOUT 
@@ -64,42 +85,59 @@ async function prepararPagina(index) {
         
         await sleep(2000);
         
-        console.log(`   [${index + 1}] Ingresando PIN...`);
+        console.log('   Ingresando PIN...');
+        await page.waitForSelector('#pininput', { timeout: 10000 });
         await page.type('#pininput', CONFIG.PIN, { delay: 30 });
         
         await sleep(500);
         
-        console.log(`   [${index + 1}] Click Canjear...`);
+        console.log('   Click Canjear...');
         await page.click('#btn-validate');
         
-        console.log(`   [${index + 1}] Esperando formulario...`);
-        await sleep(4000);
+        console.log('   Esperando formulario...');
+        await sleep(3000);
         
-        try {
-            await page.waitForSelector('#GameAccountId', { timeout: 10000 });
-        } catch (e) {
-            await sleep(3000);
+        // Esperar formulario con reintentos
+        let formFound = false;
+        for (let i = 0; i < 5; i++) {
+            try {
+                await page.waitForSelector('#GameAccountId', { timeout: 5000 });
+                formFound = true;
+                break;
+            } catch (e) {
+                console.log(`   Reintento ${i + 1}...`);
+                await sleep(2000);
+            }
         }
         
-        console.log(`   [${index + 1}] Llenando formulario...`);
-        await llenarFormulario(page);
+        if (!formFound) {
+            throw new Error('Formulario no encontrado');
+        }
+        
+        console.log('   Llenando formulario...');
+        await llenarFormulario();
+        
         await sleep(500);
         
-        pagePool[index] = { page, ready: true };
-        console.log(`   [${index + 1}] ✅ Lista`);
+        pageReady = true;
+        console.log('✅ Página lista - esperando IDs\n');
         
     } catch (error) {
-        console.error(`   [${index + 1}] ❌ Error:`, error.message);
-        pagePool[index] = { page: null, ready: false };
+        console.error('❌ Error preparando página:', error.message);
+        pageReady = false;
+        
+        // Reintentar después de 5 segundos
+        setTimeout(() => prepararPagina(), 5000);
     }
 }
 
-async function llenarFormulario(page) {
+// ========== LLENAR FORMULARIO ==========
+async function llenarFormulario() {
     await page.click('#Name', { clickCount: 3 });
-    await page.type('#Name', 'Jose Hernandez');
+    await page.type('#Name', 'Jose Hernandez', { delay: 10 });
     
     await page.click('#BornAt', { clickCount: 3 });
-    await page.type('#BornAt', '19/06/2000');
+    await page.type('#BornAt', '19/06/2000', { delay: 10 });
     
     await page.select('#NationalityAlphaCode', 'VE');
     
@@ -109,40 +147,50 @@ async function llenarFormulario(page) {
     }
 }
 
-function getAvailablePage() {
-    for (let i = 0; i < pagePool.length; i++) {
-        if (pagePool[i]?.ready && !busyPages.has(i)) {
-            busyPages.add(i);
-            return { page: pagePool[i].page, index: i };
-        }
+// ========== VERIFICAR ID ==========
+async function verificarID(playerId) {
+    // Si página no está lista, encolar
+    if (!pageReady) {
+        console.log(`⏳ Página no lista, encolando: ${playerId}`);
+        return await new Promise(r => requestQueue.push({ resolve: r, playerId }));
     }
-    return null;
-}
-
-function releasePage(index) {
-    busyPages.delete(index);
-    if (requestQueue.length > 0) {
-        const { resolve, playerId } = requestQueue.shift();
-        const avail = getAvailablePage();
-        if (avail) verificarConPuppeteer(playerId, avail).then(resolve);
+    
+    // Si página ocupada, encolar
+    if (pageBusy) {
+        console.log(`⏳ Página ocupada, encolando: ${playerId}`);
+        return await new Promise(r => requestQueue.push({ resolve: r, playerId }));
     }
-}
-
-async function verificarConPuppeteer(playerId, { page, index }) {
+    
+    pageBusy = true;
+    const start = Date.now();
+    
     try {
-        const start = Date.now();
-        console.log(`\n⚡ [${index + 1}] Verificando: ${playerId}`);
+        console.log(`\n⚡ Verificando: ${playerId}`);
         
-        await page.click('#GameAccountId', { clickCount: 3 });
-        await page.type('#GameAccountId', playerId);
+        // Limpiar campo
+        await page.evaluate(() => {
+            const input = document.querySelector('#GameAccountId');
+            if (input) input.value = '';
+            const btn = document.querySelector('#btn-player-game-data');
+            if (btn) btn.textContent = '';
+            const div = document.querySelector('.redeem-data');
+            if (div) div.style.display = 'none';
+        });
+        
+        await sleep(200);
+        
+        // Escribir ID
+        await page.focus('#GameAccountId');
+        await page.keyboard.type(playerId, { delay: 15 });
         
         await sleep(300);
         
+        // Click verificar
         await page.click('#btn-verify');
         
+        // Esperar nickname
         let nickname = null;
-        
-        for (let i = 0; i < 30; i++) {
+        for (let i = 0; i < 40; i++) {
             await sleep(200);
             
             nickname = await page.evaluate(() => {
@@ -159,18 +207,18 @@ async function verificarConPuppeteer(playerId, { page, index }) {
         
         const elapsed = Date.now() - start;
         
-        // Limpiar para siguiente consulta
-        await page.click('#GameAccountId', { clickCount: 3 });
-        await page.keyboard.press('Backspace');
-        
+        // Limpiar para siguiente
         await page.evaluate(() => {
+            const input = document.querySelector('#GameAccountId');
+            if (input) input.value = '';
             const btn = document.querySelector('#btn-player-game-data');
             if (btn) btn.textContent = '';
             const div = document.querySelector('.redeem-data');
             if (div) div.style.display = 'none';
         });
         
-        releasePage(index);
+        pageBusy = false;
+        procesarCola();
         
         if (nickname) {
             console.log(`   ✅ ${nickname} (${elapsed}ms)`);
@@ -182,19 +230,24 @@ async function verificarConPuppeteer(playerId, { page, index }) {
         
     } catch (error) {
         console.error(`   ❌ Error:`, error.message);
-        releasePage(index);
-        return { success: false, error: error.message };
+        pageBusy = false;
+        
+        // Si hay error grave, recargar página
+        if (error.message.includes('timeout') || error.message.includes('Protocol') || error.message.includes('Target')) {
+            console.log('🔄 Recargando página por error...');
+            prepararPagina();
+        }
+        
+        procesarCola();
+        return { success: false, player_id: playerId, error: error.message };
     }
 }
 
-// ========== VERIFICACIÓN DIRECTA ==========
-async function verificarID(playerId) {
-    const avail = getAvailablePage();
-    if (avail) {
-        return await verificarConPuppeteer(playerId, avail);
-    } else {
-        // Encolar si no hay páginas disponibles
-        return await new Promise(r => requestQueue.push({ resolve: r, playerId }));
+// ========== PROCESAR COLA ==========
+function procesarCola() {
+    if (requestQueue.length > 0 && pageReady && !pageBusy) {
+        const { resolve, playerId } = requestQueue.shift();
+        verificarID(playerId).then(resolve);
     }
 }
 
@@ -213,17 +266,26 @@ app.post('/verify', async (req, res) => {
 
 app.get('/', (req, res) => res.json({ 
     status: 'ok', 
-    ready: pagePool.filter(p => p?.ready).length,
-    busy: busyPages.size,
+    ready: pageReady ? 1 : 0,
+    busy: pageBusy ? 1 : 0,
     queue: requestQueue.length
 }));
 
+// ========== HEALTH CHECK ==========
+setInterval(() => {
+    if (!pageReady && !pageBusy && requestQueue.length === 0) {
+        console.log('🔍 Health check: página no lista, reintentando...');
+        prepararPagina();
+    }
+}, 60000);
+
 // ========== INICIO ==========
 async function start() {
-    console.log('\n🔥 VERIFICADOR FF - RAILWAY\n');
+    console.log('\n🔥 VERIFICADOR FF - RAILWAY (v2)\n');
     await initialize();
     app.listen(CONFIG.PORT, '0.0.0.0', () => {
-        console.log(`⚡ Servidor en puerto ${CONFIG.PORT}\n`);
+        console.log(`⚡ Puerto: ${CONFIG.PORT}`);
+        console.log(`🧪 Probar: http://localhost:${CONFIG.PORT}/test/123456789\n`);
     });
 }
 
