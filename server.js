@@ -183,43 +183,90 @@ async function verificarConPuppeteer(playerId, { page, index }) {
     try {
         console.log(`\n⚡ [${index + 1}] Verificando: ${playerId}`);
         
-        // Escribir ID
+        // Escribir ID con JavaScript
         t = Date.now();
         await page.evaluate((id) => {
             const input = document.querySelector('#GameAccountId');
             input.value = id;
             input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
         }, playerId);
         console.log(`   → ID escrito: ${Date.now() - t}ms`);
         
-        // Click verificar
+        // Click verificar con JavaScript (más confiable en headless)
         t = Date.now();
-        await page.click('#btn-verify');
+        await page.evaluate(() => {
+            const btn = document.querySelector('#btn-verify');
+            if (btn) {
+                btn.click();
+            }
+        });
         console.log(`   → Click verificar: ${Date.now() - t}ms`);
         
-        // Esperar nickname
+        // Esperar nickname - buscar en múltiples selectores
         t = Date.now();
         let nickname = null;
         
-        for (let i = 0; i < 30; i++) {
+        for (let i = 0; i < 40; i++) {
             await sleep(150);
             
             nickname = await page.evaluate(() => {
-                const el = document.querySelector('#btn-player-game-data');
-                if (el && el.offsetParent !== null) {
-                    const t = el.textContent.trim();
-                    if (t.length >= 3 && t.length <= 30) return t;
+                // Intentar varios selectores
+                const selectors = [
+                    '#btn-player-game-data',
+                    '.player-game-data',
+                    '[data-player-name]',
+                    '.redeem-data span'
+                ];
+                
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el && el.offsetParent !== null) {
+                        const t = el.textContent.trim();
+                        if (t.length >= 3 && t.length <= 30 && !t.includes('VERIFICAR')) {
+                            return t;
+                        }
+                    }
                 }
+                
+                // También buscar si apareció el div con datos
+                const dataDiv = document.querySelector('.redeem-data');
+                if (dataDiv && dataDiv.style.display !== 'none') {
+                    const spans = dataDiv.querySelectorAll('span, div');
+                    for (const s of spans) {
+                        const t = s.textContent.trim();
+                        if (t.length >= 3 && t.length <= 30 && !t.includes('VERIFICAR') && !t.includes('ID')) {
+                            return t;
+                        }
+                    }
+                }
+                
                 return null;
             });
             
             if (nickname) break;
+            
+            // Log cada 10 intentos
+            if (i === 10 || i === 20 || i === 30) {
+                const status = await page.evaluate(() => {
+                    const btn = document.querySelector('#btn-player-game-data');
+                    const dataDiv = document.querySelector('.redeem-data');
+                    return {
+                        btnExists: !!btn,
+                        btnText: btn?.textContent?.trim() || 'N/A',
+                        btnVisible: btn?.offsetParent !== null,
+                        dataDivDisplay: dataDiv?.style?.display || 'N/A'
+                    };
+                });
+                console.log(`   → Intento ${i}: btn="${status.btnText}" visible=${status.btnVisible}`);
+            }
         }
         const waitTime = Date.now() - t;
         
         // Limpiar
         await page.evaluate(() => {
-            document.querySelector('#GameAccountId').value = '';
+            const input = document.querySelector('#GameAccountId');
+            if (input) input.value = '';
             const btn = document.querySelector('#btn-player-game-data');
             if (btn) btn.textContent = '';
             const div = document.querySelector('.redeem-data');
